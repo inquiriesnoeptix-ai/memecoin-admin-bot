@@ -38,6 +38,7 @@ TOKEN = os.environ.get("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0")) or None
 GATE_CHANNEL_ID = int(os.getenv("GATE_CHANNEL_ID", "1570053267621417060"))
 CAPTCHA_CHANNEL_ID = int(os.getenv("CAPTCHA_CHANNEL_ID", "1569526459176067072"))
+RULES_CHANNEL_ID = int(os.getenv("RULES_CHANNEL_ID", "1570027184855457792"))
 VERIFYING_ROLE_NAME = os.getenv("VERIFYING_ROLE_NAME", "Verifying")
 VERIFIED_ROLE_NAME = os.getenv("VERIFIED_ROLE_NAME", "Verified")
 # Optional: use existing roles by ID (takes priority over name lookup).
@@ -82,6 +83,49 @@ def get_verified_role(guild: discord.Guild):
         if role:
             return role
     return discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
+
+
+# Purple sidebar on the embed ("bookmark" colour).
+RULES_COLOR = discord.Color(0x9146FF)
+
+
+def build_rules_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="\N{SCROLL} Community Rules",
+        description="Welcome to the trenches. Follow these to keep the server safe and worth being in.",
+        color=RULES_COLOR,
+    )
+    rules = [
+        ("\N{NO ONE UNDER EIGHTEEN SYMBOL} 16+ only", "You must be 16 or older to be here."),
+        ("\N{NO ENTRY SIGN} No scams or drainers",
+         "Scams, phishing, wallet drainers, fake giveaways, impersonation or malicious links = instant permanent ban."),
+        ("\N{CLOSED LOCK WITH KEY} Protect your wallet",
+         "Never share your seed phrase or private keys. Staff will **never** DM you first or ask for them."),
+        ("\N{DESKTOP COMPUTER} Never screenshare “Dryflip”",
+         "It's a drainer. Don't download, open or bookmark anything someone sends you."),
+        ("\N{SPEECH BALLOON} No unsolicited DMs",
+         "Don't DM members with calls, investments, paid groups or services unless they asked first."),
+        ("\N{LEFT-POINTING MAGNIFYING GLASS} DYOR",
+         "Nothing here is financial advice. Do your own research and trade at your own risk."),
+        ("\N{CHART WITH UPWARDS TREND} No manipulation",
+         "No coordinated pump-and-dumps, wash trading, fake volume or intentionally misleading calls."),
+        ("\N{HANDSHAKE} Respect everyone",
+         "No harassment, hate speech, discrimination, threats or doxxing."),
+        ("\N{PUBLIC ADDRESS LOUDSPEAKER} No spam or shilling",
+         "No message/emoji/mention spam. Promote projects only in the right channels, with permission."),
+        ("\N{SHIELD} Staff decisions are final",
+         "Disagree with a decision? Open a ticket instead of arguing in public."),
+    ]
+    for name, value in rules:
+        embed.add_field(name=name, value=value, inline=False)
+    embed.add_field(
+        name="\N{WARNING SIGN}\N{VARIATION SELECTOR-16} Disclaimer",
+        value="Memecoins are extremely volatile \N{EM DASH} you can lose some or all of your money. "
+        "You alone are responsible for your trades and your funds.",
+        inline=False,
+    )
+    embed.set_footer(text="DYOR • Don't FOMO • Clear comms • Stay safe \U0001FAE1")
+    return embed
 
 
 # --------------------------------------------------------------------------
@@ -388,8 +432,33 @@ async def lockdown_cmd(interaction: discord.Interaction):
     )
 
 
+@bot.tree.command(name="postrules", description="Post (or refresh) the rules embed in the rules channel.")
+@app_commands.describe(channel="Where to post the rules (defaults to the configured rules channel).")
+@app_commands.checks.has_permissions(administrator=True)
+async def postrules_cmd(interaction: discord.Interaction, channel: discord.TextChannel | None = None):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    guild = interaction.guild
+    target = channel or guild.get_channel(RULES_CHANNEL_ID)
+    if target is None:
+        await interaction.followup.send(
+            f"Couldn't find the rules channel ({RULES_CHANNEL_ID}). Set RULES_CHANNEL_ID or pass a channel.",
+            ephemeral=True,
+        )
+        return
+    try:
+        await _purge_bot_messages(target)
+        await target.send(embed=build_rules_embed())
+    except discord.Forbidden:
+        await interaction.followup.send(
+            f"I need permission to send messages in {target.mention}.", ephemeral=True
+        )
+        return
+    await interaction.followup.send(f"Rules posted in {target.mention}. \N{WHITE HEAVY CHECK MARK}", ephemeral=True)
+
+
 @setup_cmd.error
 @lockdown_cmd.error
+@postrules_cmd.error
 async def admin_cmd_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
         msg = "You need **Administrator** to run this."
