@@ -287,14 +287,10 @@ async def setup_cmd(interaction: discord.Interaction):
         return
 
     gate_embed = discord.Embed(
-        title="\N{SCROLL} Read me \N{EM DASH} Server rules",
+        title="\N{WHITE HEAVY CHECK MARK} Confirm you've read the rules",
         description=(
-            "**Please read this before entering.**\n\n"
-            "\N{WARNING SIGN}\N{VARIATION SELECTOR-16} Nothing posted here is financial advice. Always do your own research.\n"
-            "\N{NO ENTRY SIGN} Admins & mods will **never DM you first**. Anyone who does is a scammer \N{EM DASH} block & report.\n"
-            "\N{LINK SYMBOL} Never connect your wallet or click links sent by strangers.\n"
-            "\N{HAMMER} Scamming or impersonation = **instant ban**.\n\n"
-            f"Tap **\N{WHITE HEAVY CHECK MARK} I've read & understood** below to confirm, then finish verifying in <#{CAPTCHA_CHANNEL_ID}>."
+            "Read the rules above, then tap **\N{WHITE HEAVY CHECK MARK} I've read & understood** "
+            f"to confirm and unlock the next step in <#{CAPTCHA_CHANNEL_ID}>."
         ),
         color=discord.Color.green(),
     )
