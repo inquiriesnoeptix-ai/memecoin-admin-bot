@@ -92,7 +92,7 @@ class GateView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="I'm human — Verify",
+        label="I've read & understood",
         style=discord.ButtonStyle.success,
         emoji="\N{WHITE HEAVY CHECK MARK}",
         custom_id="verify_gate",
@@ -287,15 +287,23 @@ async def setup_cmd(interaction: discord.Interaction):
         return
 
     gate_embed = discord.Embed(
-        title="Welcome \N{WAVING HAND SIGN}  Verify to enter",
-        description="Click the button below to confirm you're human.\n"
-        f"That unlocks the next step in <#{CAPTCHA_CHANNEL_ID}>.",
+        title="\N{SCROLL} Read me \N{EM DASH} Server rules",
+        description=(
+            "**Please read this before entering.**\n\n"
+            "\N{WARNING SIGN}\N{VARIATION SELECTOR-16} Nothing posted here is financial advice. Always do your own research.\n"
+            "\N{NO ENTRY SIGN} Admins & mods will **never DM you first**. Anyone who does is a scammer \N{EM DASH} block & report.\n"
+            "\N{LINK SYMBOL} Never connect your wallet or click links sent by strangers.\n"
+            "\N{HAMMER} Scamming or impersonation = **instant ban**.\n\n"
+            f"Tap **\N{WHITE HEAVY CHECK MARK} I've read & understood** below to confirm, then finish verifying in <#{CAPTCHA_CHANNEL_ID}>."
+        ),
         color=discord.Color.green(),
     )
     captcha_embed = discord.Embed(
-        title="Step 2 — Solve the captcha",
-        description="Click **Start captcha**, read the characters in the image, then enter them.\n"
-        "Once you pass, you get full access to the server.",
+        title="\N{CLOSED LOCK WITH KEY} Verify here",
+        description=(
+            "Click **Start captcha**, read the characters in the image, and type them in to unlock the server.\n\n"
+            "\N{HAMMER} Scammers and impersonators are banned instantly."
+        ),
         color=discord.Color.blurple(),
     )
 
