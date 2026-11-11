@@ -40,6 +40,9 @@ GATE_CHANNEL_ID = int(os.getenv("GATE_CHANNEL_ID", "1570053267621417060"))
 CAPTCHA_CHANNEL_ID = int(os.getenv("CAPTCHA_CHANNEL_ID", "1569526459176067072"))
 VERIFYING_ROLE_NAME = os.getenv("VERIFYING_ROLE_NAME", "Verifying")
 VERIFIED_ROLE_NAME = os.getenv("VERIFIED_ROLE_NAME", "Verified")
+# Optional: use existing roles by ID (takes priority over name lookup).
+VERIFYING_ROLE_ID = int(os.getenv("VERIFYING_ROLE_ID", "0")) or None
+VERIFIED_ROLE_ID = int(os.getenv("VERIFIED_ROLE_ID", "0")) or None
 CAPTCHA_TTL = int(os.getenv("CAPTCHA_TTL", "300"))  # seconds a code stays valid
 
 # Characters used in the captcha (ambiguous ones like 0/O/1/I removed).
@@ -64,6 +67,23 @@ def role_by_name(guild: discord.Guild, name: str):
     return discord.utils.get(guild.roles, name=name)
 
 
+def get_verifying_role(guild: discord.Guild):
+    """Prefer the configured role ID; fall back to lookup by name."""
+    if VERIFYING_ROLE_ID:
+        role = guild.get_role(VERIFYING_ROLE_ID)
+        if role:
+            return role
+    return discord.utils.get(guild.roles, name=VERIFYING_ROLE_NAME)
+
+
+def get_verified_role(guild: discord.Guild):
+    if VERIFIED_ROLE_ID:
+        role = guild.get_role(VERIFIED_ROLE_ID)
+        if role:
+            return role
+    return discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
+
+
 # --------------------------------------------------------------------------
 # Persistent views (buttons survive bot restarts via static custom_ids)
 # --------------------------------------------------------------------------
@@ -80,8 +100,8 @@ class GateView(discord.ui.View):
     async def verify_gate(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         member = interaction.user
-        verifying = role_by_name(guild, VERIFYING_ROLE_NAME)
-        verified = role_by_name(guild, VERIFIED_ROLE_NAME)
+        verifying = get_verifying_role(guild)
+        verified = get_verified_role(guild)
 
         if verified and verified in member.roles:
             await interaction.response.send_message("You're already verified. \U0001F389", ephemeral=True)
@@ -139,7 +159,7 @@ class CaptchaStartView(discord.ui.View):
     async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         member = interaction.user
-        verified = role_by_name(guild, VERIFIED_ROLE_NAME)
+        verified = get_verified_role(guild)
 
         if verified and verified in member.roles:
             await interaction.response.send_message("You're already verified. \U0001F389", ephemeral=True)
@@ -195,8 +215,8 @@ class CaptchaModal(discord.ui.Modal, title="Captcha verification"):
             return
 
         pending.pop(member.id, None)
-        verifying = role_by_name(guild, VERIFYING_ROLE_NAME)
-        verified = role_by_name(guild, VERIFIED_ROLE_NAME)
+        verifying = get_verifying_role(guild)
+        verified = get_verified_role(guild)
         try:
             if verified:
                 await member.add_roles(verified, reason="Passed captcha")
@@ -233,10 +253,10 @@ async def setup_cmd(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
     guild = interaction.guild
 
-    verifying = role_by_name(guild, VERIFYING_ROLE_NAME) or await guild.create_role(
+    verifying = get_verifying_role(guild) or await guild.create_role(
         name=VERIFYING_ROLE_NAME, reason="verification bot setup"
     )
-    verified = role_by_name(guild, VERIFIED_ROLE_NAME) or await guild.create_role(
+    verified = get_verified_role(guild) or await guild.create_role(
         name=VERIFIED_ROLE_NAME, reason="verification bot setup"
     )
 
@@ -327,7 +347,7 @@ class ConfirmLockdownView(discord.ui.View):
 @app_commands.checks.has_permissions(administrator=True)
 async def lockdown_cmd(interaction: discord.Interaction):
     guild = interaction.guild
-    verified = role_by_name(guild, VERIFIED_ROLE_NAME)
+    verified = get_verified_role(guild)
     if verified is None:
         await interaction.response.send_message("Run **/setup** first to create the roles.", ephemeral=True)
         return
