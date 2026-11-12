@@ -1,13 +1,19 @@
 # Memecoin Server Verification Bot
 
-A two-gate Discord verification bot:
+An onboarding + verification bot. Everything after step 1 happens in private
+popups only the member can see, and each popup deletes itself before the next
+one appears, so nothing piles up in the channel:
 
-1. New members see **only** the gate channel. It has an **✅ I'm human** button.
-2. Clicking it grants a `Verifying` role, which unlocks the captcha channel.
-3. In the captcha channel they click **🔐 Start captcha**, read an image of
-   random characters, and type them in.
-4. On success they get the `Verified` role and lose `Verifying` — the two gate
-   channels disappear and the real server appears.
+1. New members see **only** the gate channel and tap **✅ I've read & understood**.
+2. The bot asks each onboarding question (country, then experience). Tapping an
+   answer gives that role, deletes the question and shows the next one.
+3. **You're all set** → tap **Proceed to verify** → that popup deletes itself.
+4. An image captcha pops up. A wrong or expired code just swaps in a fresh one.
+5. On success they get the `Verified` role, the gate channel disappears and the
+   real server appears.
+
+To change the questions, answers or role names, edit the `QUESTIONS` block at
+the top of `bot.py`, push, then run `/setup` again (it creates any new roles).
 
 The bot manages **roles**; Discord **channel permissions** (tied to those roles)
 control what each person can see.
@@ -70,8 +76,9 @@ The `.gitignore` already keeps `.env` out of the repo.
 
 In Discord, run these slash commands (you need Administrator):
 
-- **`/setup`** — creates the `Verifying` and `Verified` roles, sets the two gate
-  channels' permissions, and posts both panels.
+- **`/setup`** — creates the `Verified` role and every onboarding role, sets the
+  gate channel's permissions, and posts the gate panel.
+- **`/postrules`** — posts the rules embed in the rules channel.
 - **`/lockdown`** *(optional)* — hides every other channel from `@everyone` and
   shows them to `Verified`. Asks for confirmation first. Admins are unaffected.
 
