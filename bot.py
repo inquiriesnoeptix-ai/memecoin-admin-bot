@@ -64,9 +64,7 @@ QUESTIONS = [
         "options": [
             ("Newbie Trader (1-10 SOL)", "🐣", 1570451725658235022),
             ("Novice Trader (10-20 SOL)", "📊", 1570451728535527544),
-            # TODO: you sent the same ID as Novice for this one. Replace None
-            # with the Experienced Trader role's real ID.
-            ("Experienced Trader (20-100 SOL)", "🧠", None),
+            ("Experienced Trader (20-100 SOL)", "🧠", 1570452389499244574),
             ("Pro Trader / KOL (100+ SOL)", "🐋", 1570453252598669463),
         ],
     },
