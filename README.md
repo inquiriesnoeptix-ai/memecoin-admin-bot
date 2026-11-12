@@ -1,19 +1,24 @@
 # Memecoin Server Verification Bot
 
-An onboarding + verification bot. Everything after step 1 happens in private
-popups only the member can see, and each popup deletes itself before the next
-one appears, so nothing piles up in the channel:
+An onboarding + verification bot across two channels:
 
-1. New members see **only** the gate channel and tap **✅ I've read & understood**.
-2. The bot asks each onboarding question (country, then experience). Tapping an
-   answer gives that role, deletes the question and shows the next one.
-3. **You're all set** → tap **Proceed to verify** → that popup deletes itself.
-4. An image captcha pops up. A wrong or expired code just swaps in a fresh one.
-5. On success they get the `Verified` role, the gate channel disappears and the
-   real server appears.
+1. **Read-me channel**: new members see only this. They tap **✅ I've read &
+   understood**, get the `Verifying` role, and the read-me channel closes while
+   the verify channel opens.
+2. **Verify channel**: they tap **🔐 Start verification**. Everything from here
+   is a private popup only they see, and each popup deletes itself before the
+   next one appears:
+   - 🌍 country (pick one)
+   - 📈 trader level (pick one)
+   - 🔔 pings (pick any, then **Done**; **No pings** or nothing picked gives the
+     no-pings role)
+   - **✅ Proceed to verify**
+   - 🔐 image captcha (a wrong or expired code swaps in a fresh one)
+3. They pass and get `Verified`, `Verifying` is removed, the verify channel
+   closes and the rest of the server opens.
 
 To change the questions, answers or role names, edit the `QUESTIONS` block at
-the top of `bot.py`, push, then run `/setup` again (it creates any new roles).
+the top of `bot.py`, push, then run `/setup` again (it reports any role IDs it can't find).
 
 The bot manages **roles**; Discord **channel permissions** (tied to those roles)
 control what each person can see.
@@ -76,8 +81,8 @@ The `.gitignore` already keeps `.env` out of the repo.
 
 In Discord, run these slash commands (you need Administrator):
 
-- **`/setup`** — creates the `Verified` role and every onboarding role, sets the
-  gate channel's permissions, and posts the gate panel.
+- **`/setup`** — sets both channels' permissions, posts the read-me and verify
+  panels, and checks every onboarding role ID exists.
 - **`/postrules`** — posts the rules embed in the rules channel.
 - **`/lockdown`** *(optional)* — hides every other channel from `@everyone` and
   shows them to `Verified`. Asks for confirmation first. Admins are unaffected.

@@ -1,17 +1,19 @@
 """
 Discord onboarding + verification bot.
 
-Flow (everything after step 1 happens in private popups only the member sees,
-and each popup deletes itself before the next one appears):
-  1. New member sees only the GATE channel and taps "I've read & understood".
-  2. The bot asks each question in QUESTIONS (country, experience, ...).
-     Tapping an answer gives that role, deletes the question, shows the next.
-  3. "You're done" -> tap "Proceed to verify" -> that popup deletes itself.
-  4. An image captcha pops up. Pass it -> VERIFIED role -> the gate channel
-     disappears and the rest of the server opens up.
+Flow:
+  1. READ-ME channel: new member taps "I've read & understood". They get the
+     VERIFYING role, so the read-me channel closes and the VERIFY channel opens.
+  2. VERIFY channel: they tap "Start verification". Everything from here is a
+     private popup only they see, and each one deletes itself before the next:
+       - each question in QUESTIONS (country, trader level, pings)
+       - "You're all set" -> "Proceed to verify"
+       - an image captcha
+  3. Pass the captcha -> VERIFIED role, VERIFYING removed -> the verify channel
+     closes and the rest of the server opens up.
 
 Admin commands:
-  /setup      create the roles, lock the gate channel, post the gate panel
+  /setup      set up both channels' permissions and post both panels
   /lockdown   hide every other channel from @everyone, show it to Verified
   /postrules  post the rules embed
 """
@@ -88,8 +90,9 @@ QUESTIONS = [
 TOKEN = os.environ.get("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0")) or None
 GATE_CHANNEL_ID = int(os.getenv("GATE_CHANNEL_ID", "1570053267621417060"))
-# Old captcha channel. No longer used by the flow; kept so /lockdown skips it.
-CAPTCHA_CHANNEL_ID = int(os.getenv("CAPTCHA_CHANNEL_ID", "1569526459176067072"))
+# Verify channel: questions + captcha happen here. (Env name kept from the
+# original setup so the Railway variable still works.)
+VERIFY_CHANNEL_ID = int(os.getenv("CAPTCHA_CHANNEL_ID", "1569526459176067072"))
 RULES_CHANNEL_ID = int(os.getenv("RULES_CHANNEL_ID", "1570027184855457792"))
 VERIFYING_ROLE_NAME = os.getenv("VERIFYING_ROLE_NAME", "Verifying")
 VERIFIED_ROLE_NAME = os.getenv("VERIFIED_ROLE_NAME", "Verified")
@@ -389,6 +392,45 @@ class GateView(discord.ui.View):
         custom_id="verify_gate",
     )
     async def verify_gate(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        member = interaction.user
+        verified = get_verified_role(guild)
+        if verified and verified in member.roles:
+            await interaction.response.send_message("You're already verified. \U0001F389", ephemeral=True)
+            return
+        verifying = get_verifying_role(guild)
+        if verifying is None:
+            await interaction.response.send_message(
+                "Setup isn't finished yet. An admin needs to run **/setup**.", ephemeral=True
+            )
+            return
+        try:
+            # Verifying hides this read-me channel and opens the verify channel.
+            await member.add_roles(verifying, reason="Read the rules")
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "I couldn't give you access. An admin needs to move my role above `Verifying`.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"\N{WHITE HEAVY CHECK MARK} Head to <#{VERIFY_CHANNEL_ID}> to finish verifying.", ephemeral=True
+        )
+
+
+class StartVerifyView(discord.ui.View):
+    """Public panel in the verify channel. Starts the private question + captcha flow."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Start verification",
+        style=discord.ButtonStyle.success,
+        emoji="\N{CLOSED LOCK WITH KEY}",
+        custom_id="verify_start",
+    )
+    async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
         verified = get_verified_role(interaction.guild)
         if verified and verified in interaction.user.roles:
             await interaction.response.send_message("You're already verified. \U0001F389", ephemeral=True)
@@ -528,7 +570,7 @@ class CaptchaModal(discord.ui.Modal, title="Captcha verification"):
         try:
             await member.add_roles(verified, reason="Passed captcha")
             verifying = get_verifying_role(guild)
-            if verifying and verifying in member.roles:  # leftover from the old flow
+            if verifying and verifying in member.roles:  # closes the verify channel
                 await member.remove_roles(verifying, reason="Verification complete")
         except discord.Forbidden:
             await interaction.followup.send(
@@ -549,12 +591,15 @@ async def _purge_bot_messages(channel: discord.abc.Messageable):
         pass
 
 
-@bot.tree.command(name="setup", description="Create the roles, lock the gate channel, and post the gate panel.")
+@bot.tree.command(name="setup", description="Set up the read-me and verify channels and post both panels.")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_cmd(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
     guild = interaction.guild
 
+    verifying = get_verifying_role(guild) or await guild.create_role(
+        name=VERIFYING_ROLE_NAME, reason="verification bot setup"
+    )
     verified = get_verified_role(guild) or await guild.create_role(
         name=VERIFIED_ROLE_NAME, reason="verification bot setup"
     )
@@ -568,18 +613,26 @@ async def setup_cmd(interaction: discord.Interaction):
                 missing.append(f"{label} ({ref if ref is not None else 'no ID set'})")
 
     gate = guild.get_channel(GATE_CHANNEL_ID)
-    if gate is None:
+    verify = guild.get_channel(VERIFY_CHANNEL_ID)
+    if gate is None or verify is None:
         await interaction.followup.send(
-            f"Couldn't find the gate channel. Check GATE_CHANNEL_ID ({GATE_CHANNEL_ID}).", ephemeral=True
+            f"Couldn't find the channels. Check GATE_CHANNEL_ID ({GATE_CHANNEL_ID}) and "
+            f"CAPTCHA_CHANNEL_ID ({VERIFY_CHANNEL_ID}).",
+            ephemeral=True,
         )
         return
 
+    everyone = guild.default_role
     try:
-        # Everyone can see + read but not chat; hidden once Verified.
-        await gate.set_permissions(
-            guild.default_role, view_channel=True, read_message_history=True, send_messages=False
-        )
+        # Read-me: new members see it (read only); it closes once they tap ✅
+        # (Verifying) and stays closed once Verified.
+        await gate.set_permissions(everyone, view_channel=True, read_message_history=True, send_messages=False)
+        await gate.set_permissions(verifying, view_channel=False)
         await gate.set_permissions(verified, view_channel=False)
+        # Verify: only Verifying sees it (read only); closes once Verified.
+        await verify.set_permissions(everyone, view_channel=False)
+        await verify.set_permissions(verifying, view_channel=True, read_message_history=True, send_messages=False)
+        await verify.set_permissions(verified, view_channel=False)
     except discord.Forbidden:
         await interaction.followup.send(
             "I need **Manage Channels** permission (and my role above the channel) to configure it.",
@@ -592,8 +645,19 @@ async def setup_cmd(interaction: discord.Interaction):
         description="Read the rules above, then tap **\N{WHITE HEAVY CHECK MARK} I've read & understood** to get started.",
         color=discord.Color.green(),
     )
+    verify_embed = discord.Embed(
+        title="\N{CLOSED LOCK WITH KEY} Verify here",
+        description=(
+            f"Tap **Start verification**. You'll answer {len(QUESTIONS)} quick questions, "
+            "then solve a captcha to unlock the server.\n\n"
+            "\N{HAMMER} Scammers and impersonators are banned instantly."
+        ),
+        color=BRAND_COLOR,
+    )
     await _purge_bot_messages(gate)
     await gate.send(embed=gate_embed, view=GateView())
+    await _purge_bot_messages(verify)
+    await verify.send(embed=verify_embed, view=StartVerifyView())
 
     roles_line = (
         "\N{WARNING SIGN}\N{VARIATION SELECTOR-16} These onboarding roles weren't found: "
@@ -602,11 +666,11 @@ async def setup_cmd(interaction: discord.Interaction):
     )
     await interaction.followup.send(
         "**Setup complete.**\n"
-        f"- Gate panel posted in <#{GATE_CHANNEL_ID}>\n"
+        f"- Read-me panel posted in <#{GATE_CHANNEL_ID}>\n"
+        f"- Verify panel posted in <#{VERIFY_CHANNEL_ID}>\n"
         f"- {roles_line}\n\n"
-        "Make sure my role sits **above** the onboarding roles and "
-        f"`{VERIFIED_ROLE_NAME}` in Server Settings → Roles.\n"
-        f"The old captcha channel <#{CAPTCHA_CHANNEL_ID}> isn't used anymore; you can delete it.",
+        f"Make sure my role sits **above** `{VERIFYING_ROLE_NAME}`, `{VERIFIED_ROLE_NAME}` "
+        "and the onboarding roles in Server Settings → Roles.",
         ephemeral=True,
     )
 
@@ -650,7 +714,7 @@ async def lockdown_cmd(interaction: discord.Interaction):
 
     view = ConfirmLockdownView(interaction.user.id)
     await interaction.response.send_message(
-        "This will set **every channel except the gate channel** so that `@everyone` can't see them "
+        "This will set **every channel except the read-me and verify channels** so that `@everyone` can't see them "
         f"and `{VERIFIED_ROLE_NAME}` can. Admins are unaffected. Continue?",
         view=view,
         ephemeral=True,
@@ -662,7 +726,7 @@ async def lockdown_cmd(interaction: discord.Interaction):
 
     everyone = guild.default_role
     changed, failed = 0, 0
-    skip_ids = {GATE_CHANNEL_ID, CAPTCHA_CHANNEL_ID}
+    skip_ids = {GATE_CHANNEL_ID, VERIFY_CHANNEL_ID}
     for channel in guild.channels:
         if channel.id in skip_ids:
             continue
@@ -726,6 +790,7 @@ async def admin_cmd_error(interaction: discord.Interaction, error: app_commands.
 async def setup_hook():
     # Register persistent views so buttons keep working after a restart.
     bot.add_view(GateView())
+    bot.add_view(StartVerifyView())
     for qi, q in enumerate(QUESTIONS):
         bot.add_view(MultiQuestionView(qi) if q.get("multi") else QuestionView(qi))
     bot.add_view(ProceedView())
