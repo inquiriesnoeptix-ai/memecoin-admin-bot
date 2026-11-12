@@ -35,32 +35,52 @@ log = logging.getLogger("verifybot")
 
 # ==========================================================================
 # ONBOARDING QUESTIONS — edit these freely.
-# Each option is (button label, emoji, role name). The bot creates any role
-# that doesn't exist yet when you run /setup. Max 25 options per question.
-# Members can pick only ONE option per question.
+# Each option is (button label, emoji, role). The role is a role ID (number,
+# recommended: survives renames) or an exact role name (text).
+# Max 24 options per question.
+#
+# "multi": False -> member picks exactly ONE, then moves on automatically.
+# "multi": True  -> member toggles as many as they like, then taps Done.
+#                   "none_option" is the "no thanks" role: tapping it (or
+#                   tapping Done with nothing picked) gives that role and
+#                   moves them on.
 # ==========================================================================
 QUESTIONS = [
     {
         "title": "🌍 Where are you based?",
+        "multi": False,
         "options": [
-            ("USA", "🇺🇸", "USA"),
-            ("Canada", "🇨🇦", "Canada"),
-            ("UK", "🇬🇧", "UK"),
-            ("Europe", "🇪🇺", "Europe"),
-            ("Australia / NZ", "🇦🇺", "Australia/NZ"),
-            ("Asia", "🌏", "Asia"),
-            ("South America", "🌎", "South America"),
-            ("Africa / Middle East", "🌍", "Africa/Middle East"),
+            ("US", "🇺🇸", 1570451704766275595),
+            ("EU", "🇪🇺", 1570451708830810192),
+            ("GB / UK", "🇬🇧", 1570451711980740638),
+            ("Asia", "🌏", 1570451715604615380),
+            ("AU", "🇦🇺", 1570451718578245766),
+            ("Other", "🌍", 1570451721799340183),
         ],
     },
     {
-        "title": "📈 How experienced are you with memecoins?",
+        "title": "📈 What kind of trader are you?",
+        "multi": False,
         "options": [
-            ("New to memecoins", "🐣", "Beginner"),
-            ("A few months in", "📈", "Intermediate"),
-            ("Experienced", "🧠", "Experienced"),
-            ("Full-time trader", "🐋", "Full-time Trader"),
+            ("Newbie Trader (1-10 SOL)", "🐣", 1570451725658235022),
+            ("Novice Trader (10-20 SOL)", "📊", 1570451728535527544),
+            # TODO: you sent the same ID as Novice for this one. Replace None
+            # with the Experienced Trader role's real ID.
+            ("Experienced Trader (20-100 SOL)", "🧠", None),
+            ("Pro Trader / KOL (100+ SOL)", "🐋", 1570453252598669463),
         ],
+    },
+    {
+        "title": "🔔 What do you want to be pinged for?",
+        "multi": True,
+        "options": [
+            ("Calls", "📞", 1570453310966599811),
+            ("Announcements", "📢", 1570453315156709508),
+            ("Live Trading", "🔴", 1570453318617010236),
+            ("Giveaways (coming soon)", "🎁", 1570453322023047258),
+            ("Scans", "📊", 1570453771505631323),
+        ],
+        "none_option": ("No pings", "🔕", 1570453773640400947),
     },
 ]
 
@@ -103,6 +123,15 @@ def gen_code() -> str:
 
 def role_by_name(guild: discord.Guild, name: str):
     return discord.utils.get(guild.roles, name=name)
+
+
+def resolve_role(guild: discord.Guild, ref):
+    """A QUESTIONS role reference: int = role ID, str = exact name, None = unset."""
+    if ref is None:
+        return None
+    if isinstance(ref, int):
+        return guild.get_role(ref)
+    return role_by_name(guild, ref)
 
 
 def get_verifying_role(guild: discord.Guild):
@@ -183,18 +212,27 @@ async def delete_source(interaction: discord.Interaction):
 
 def question_embed(qi: int) -> discord.Embed:
     q = QUESTIONS[qi]
+    how = "Pick as many as you want, then tap **Done**." if q.get("multi") else "Pick one."
     return discord.Embed(
         title=q["title"],
-        description=f"Pick one. Question {qi + 1} of {len(QUESTIONS)}.",
+        description=f"{how} Question {qi + 1} of {len(QUESTIONS)}.",
         color=BRAND_COLOR,
     )
+
+
+def build_question_view(qi: int, member: discord.Member) -> discord.ui.View:
+    if QUESTIONS[qi].get("multi"):
+        return MultiQuestionView(qi, {r.id for r in member.roles})
+    return QuestionView(qi)
 
 
 async def send_step(interaction: discord.Interaction, step: int):
     """Send question `step`, or the 'proceed to verify' popup after the last one.
     Uses a followup, so the interaction must already be responded to/deferred."""
     if step < len(QUESTIONS):
-        await interaction.followup.send(embed=question_embed(step), view=QuestionView(step), ephemeral=True)
+        await interaction.followup.send(
+            embed=question_embed(step), view=build_question_view(step, interaction.user), ephemeral=True
+        )
     else:
         embed = discord.Embed(
             title="\N{WHITE HEAVY CHECK MARK} You're all set",
@@ -225,18 +263,18 @@ async def handle_answer(interaction: discord.Interaction, qi: int, oi: int):
     guild = interaction.guild
     member = interaction.user
     options = QUESTIONS[qi]["options"]
-    chosen = role_by_name(guild, options[oi][2])
+    chosen = resolve_role(guild, options[oi][2])
     if chosen is None:
         await interaction.response.send_message(
-            "That role doesn't exist yet. An admin needs to run **/setup**.", ephemeral=True
+            "That option isn't set up yet. Pick another one, or let a mod know.", ephemeral=True
         )
         return
 
     await interaction.response.defer()
     # Only one answer per question: drop any other role from this question.
     others = []
-    for _label, _emoji, role_name in options:
-        role = role_by_name(guild, role_name)
+    for _label, _emoji, ref in options:
+        role = resolve_role(guild, ref)
         if role and role != chosen and role in member.roles:
             others.append(role)
     try:
@@ -251,6 +289,88 @@ async def handle_answer(interaction: discord.Interaction, qi: int, oi: int):
         )
         return
 
+    await delete_source(interaction)
+    await send_step(interaction, qi + 1)
+
+
+def _none_role(guild: discord.Guild, qi: int):
+    none_opt = QUESTIONS[qi].get("none_option")
+    return resolve_role(guild, none_opt[2]) if none_opt else None
+
+
+async def handle_toggle(interaction: discord.Interaction, qi: int, oi: int):
+    """Multi-pick question: add/remove one role and redraw the buttons."""
+    guild = interaction.guild
+    member = interaction.user
+    role = resolve_role(guild, QUESTIONS[qi]["options"][oi][2])
+    if role is None:
+        await interaction.response.send_message(
+            "That option isn't set up yet. Let a mod know.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer()
+    selected = {r.id for r in member.roles}
+    none_role = _none_role(guild, qi)
+    try:
+        if role.id in selected:
+            await member.remove_roles(role, reason="Onboarding toggle off")
+            selected.discard(role.id)
+        else:
+            await member.add_roles(role, reason="Onboarding toggle on")
+            selected.add(role.id)
+            if none_role and none_role.id in selected:  # picked something -> not "no pings"
+                await member.remove_roles(none_role, reason="Picked a ping role")
+                selected.discard(none_role.id)
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "I couldn't change that role. An admin needs to move my role above the ping roles.",
+            ephemeral=True,
+        )
+        return
+    await interaction.edit_original_response(view=MultiQuestionView(qi, selected))
+
+
+async def handle_none(interaction: discord.Interaction, qi: int):
+    """'No pings': clear this question's roles, give the none role, move on."""
+    guild = interaction.guild
+    member = interaction.user
+    await interaction.response.defer()
+    picked = [
+        role for role in (resolve_role(guild, ref) for _l, _e, ref in QUESTIONS[qi]["options"])
+        if role and role in member.roles
+    ]
+    none_role = _none_role(guild, qi)
+    try:
+        if picked:
+            await member.remove_roles(*picked, reason="Chose no pings")
+        if none_role and none_role not in member.roles:
+            await member.add_roles(none_role, reason="Chose no pings")
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "I couldn't change your roles. An admin needs to move my role above the ping roles.",
+            ephemeral=True,
+        )
+        return
+    await delete_source(interaction)
+    await send_step(interaction, qi + 1)
+
+
+async def handle_done(interaction: discord.Interaction, qi: int):
+    """Done on a multi-pick question. Nothing picked counts as 'no pings'."""
+    # Read what's picked from the buttons themselves (green = picked); that's
+    # always in sync with what the member saw, even if role caches lag.
+    prefix = f"onb:{qi}:"
+    any_picked = False
+    for row in (interaction.message.components if interaction.message else []):
+        for child in getattr(row, "children", []):
+            cid = getattr(child, "custom_id", "") or ""
+            if cid.startswith(prefix) and cid[len(prefix):].isdigit() and child.style == discord.ButtonStyle.success:
+                any_picked = True
+    if not any_picked:
+        await handle_none(interaction, qi)
+        return
+    await interaction.response.defer()
     await delete_source(interaction)
     await send_step(interaction, qi + 1)
 
@@ -276,7 +396,9 @@ class GateView(discord.ui.View):
             await interaction.response.send_message("You're already verified. \U0001F389", ephemeral=True)
             return
         if QUESTIONS:
-            await interaction.response.send_message(embed=question_embed(0), view=QuestionView(0), ephemeral=True)
+            await interaction.response.send_message(
+                embed=question_embed(0), view=build_question_view(0, interaction.user), ephemeral=True
+            )
         else:
             await interaction.response.defer(ephemeral=True)
             await send_step(interaction, 0)
@@ -299,6 +421,45 @@ class QuestionView(discord.ui.View):
     def _callback(qi: int, oi: int):
         async def callback(interaction: discord.Interaction):
             await handle_answer(interaction, qi, oi)
+        return callback
+
+
+class MultiQuestionView(discord.ui.View):
+    """Toggle buttons (green = picked), plus 'none' and Done."""
+
+    def __init__(self, qi: int, selected_ids: set[int] = frozenset()):
+        super().__init__(timeout=None)
+        q = QUESTIONS[qi]
+        for oi, (label, emoji, ref) in enumerate(q["options"]):
+            picked = isinstance(ref, int) and ref in selected_ids
+            button = discord.ui.Button(
+                label=label,
+                emoji=emoji,
+                style=discord.ButtonStyle.success if picked else discord.ButtonStyle.secondary,
+                custom_id=f"onb:{qi}:{oi}",
+            )
+            button.callback = self._wrap(handle_toggle, qi, oi)
+            self.add_item(button)
+
+        if q.get("none_option"):
+            label, emoji, _ref = q["none_option"]
+            button = discord.ui.Button(
+                label=label, emoji=emoji, style=discord.ButtonStyle.danger, custom_id=f"onb:{qi}:none", row=4
+            )
+            button.callback = self._wrap(handle_none, qi)
+            self.add_item(button)
+
+        done = discord.ui.Button(
+            label="Done", emoji="\N{BLACK RIGHTWARDS ARROW}", style=discord.ButtonStyle.primary,
+            custom_id=f"onb:{qi}:done", row=4,
+        )
+        done.callback = self._wrap(handle_done, qi)
+        self.add_item(done)
+
+    @staticmethod
+    def _wrap(handler, *args):
+        async def callback(interaction: discord.Interaction):
+            await handler(interaction, *args)
         return callback
 
 
@@ -400,12 +561,13 @@ async def setup_cmd(interaction: discord.Interaction):
         name=VERIFIED_ROLE_NAME, reason="verification bot setup"
     )
 
-    created = []
+    # Check every onboarding role exists (they're your roles; the bot doesn't create them).
+    missing = []
     for q in QUESTIONS:
-        for _label, _emoji, role_name in q["options"]:
-            if role_by_name(guild, role_name) is None:
-                await guild.create_role(name=role_name, reason="onboarding role")
-                created.append(role_name)
+        entries = list(q["options"]) + ([q["none_option"]] if q.get("none_option") else [])
+        for label, _emoji, ref in entries:
+            if resolve_role(guild, ref) is None:
+                missing.append(f"{label} ({ref if ref is not None else 'no ID set'})")
 
     gate = guild.get_channel(GATE_CHANNEL_ID)
     if gate is None:
@@ -435,7 +597,11 @@ async def setup_cmd(interaction: discord.Interaction):
     await _purge_bot_messages(gate)
     await gate.send(embed=gate_embed, view=GateView())
 
-    roles_line = f"Created roles: {', '.join(created)}" if created else "All onboarding roles already existed."
+    roles_line = (
+        "\N{WARNING SIGN}\N{VARIATION SELECTOR-16} These onboarding roles weren't found: "
+        + ", ".join(missing) + ". Those buttons won't work until the role IDs in bot.py are fixed."
+        if missing else "All onboarding roles found."
+    )
     await interaction.followup.send(
         "**Setup complete.**\n"
         f"- Gate panel posted in <#{GATE_CHANNEL_ID}>\n"
@@ -562,8 +728,8 @@ async def admin_cmd_error(interaction: discord.Interaction, error: app_commands.
 async def setup_hook():
     # Register persistent views so buttons keep working after a restart.
     bot.add_view(GateView())
-    for qi in range(len(QUESTIONS)):
-        bot.add_view(QuestionView(qi))
+    for qi, q in enumerate(QUESTIONS):
+        bot.add_view(MultiQuestionView(qi) if q.get("multi") else QuestionView(qi))
     bot.add_view(ProceedView())
     bot.add_view(EnterCodeView())
 
@@ -586,5 +752,6 @@ if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("DISCORD_TOKEN environment variable is not set.")
     for _q in QUESTIONS:
-        assert len(_q["options"]) <= 25, "Discord allows at most 25 buttons per question"
+        _limit = 20 if _q.get("multi") else 25  # multi needs a row for None/Done
+        assert len(_q["options"]) <= _limit, f"Too many options in {_q['title']!r} (max {_limit})"
     bot.run(TOKEN)
