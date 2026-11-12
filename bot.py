@@ -640,6 +640,58 @@ async def ensure_channel_perms(guild: discord.Guild) -> list[str]:
     return problems
 
 
+def gate_panel_embed() -> discord.Embed:
+    return discord.Embed(
+        title="\N{WHITE HEAVY CHECK MARK} Confirm you've read the rules",
+        description="Read the rules above, then tap **\N{WHITE HEAVY CHECK MARK} I've read & understood** to get started.",
+        color=discord.Color.green(),
+    )
+
+
+def verify_panel_embed() -> discord.Embed:
+    return discord.Embed(
+        title="\N{CLOSED LOCK WITH KEY} Verify here",
+        description=(
+            f"Tap **Start verification**. You'll answer {len(QUESTIONS)} quick questions, "
+            "then solve a captcha to unlock the server.\n\n"
+            "\N{HAMMER} Scammers and impersonators are banned instantly."
+        ),
+        color=BRAND_COLOR,
+    )
+
+
+async def _has_panel(channel: discord.TextChannel, custom_id: str) -> bool:
+    """True if one of the bot's recent messages in `channel` has a button with `custom_id`."""
+    async for message in channel.history(limit=30):
+        if message.author.id != bot.user.id:
+            continue
+        for row in message.components:
+            for child in getattr(row, "children", []):
+                if getattr(child, "custom_id", None) == custom_id:
+                    return True
+    return False
+
+
+async def ensure_panels(guild: discord.Guild):
+    """Post the read-me and verify panels if they're missing (or are an old,
+    dead version). Leaves everyone else's messages alone."""
+    for channel_id, custom_id, embed_fn, view_cls in (
+        (GATE_CHANNEL_ID, "verify_gate", gate_panel_embed, GateView),
+        (VERIFY_CHANNEL_ID, "verify_start", verify_panel_embed, StartVerifyView),
+    ):
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            continue
+        try:
+            if await _has_panel(channel, custom_id):
+                continue
+            await _purge_bot_messages(channel)  # clears any old panel from an earlier version
+            await channel.send(embed=embed_fn(), view=view_cls())
+            log.info("[%s] Posted missing panel in #%s", guild.name, channel.name)
+        except discord.HTTPException:
+            log.exception("[%s] Couldn't post the panel in #%s", guild.name, channel.name)
+
+
 async def _purge_bot_messages(channel: discord.abc.Messageable):
     """Best-effort cleanup of the bot's own old panel messages so re-running a
     command doesn't stack duplicates. Silently ignores missing permissions."""
@@ -682,24 +734,10 @@ async def setup_cmd(interaction: discord.Interaction):
 
     perm_problems = await ensure_channel_perms(guild)
 
-    gate_embed = discord.Embed(
-        title="\N{WHITE HEAVY CHECK MARK} Confirm you've read the rules",
-        description="Read the rules above, then tap **\N{WHITE HEAVY CHECK MARK} I've read & understood** to get started.",
-        color=discord.Color.green(),
-    )
-    verify_embed = discord.Embed(
-        title="\N{CLOSED LOCK WITH KEY} Verify here",
-        description=(
-            f"Tap **Start verification**. You'll answer {len(QUESTIONS)} quick questions, "
-            "then solve a captcha to unlock the server.\n\n"
-            "\N{HAMMER} Scammers and impersonators are banned instantly."
-        ),
-        color=BRAND_COLOR,
-    )
     await _purge_bot_messages(gate)
-    await gate.send(embed=gate_embed, view=GateView())
+    await gate.send(embed=gate_panel_embed(), view=GateView())
     await _purge_bot_messages(verify)
-    await verify.send(embed=verify_embed, view=StartVerifyView())
+    await verify.send(embed=verify_panel_embed(), view=StartVerifyView())
 
     roles_line = (
         "\N{WARNING SIGN}\N{VARIATION SELECTOR-16} These onboarding roles weren't found: "
@@ -865,6 +903,7 @@ async def on_ready():
             log.warning("[%s] %s", guild.name, problem)
         if not problems:
             log.info("[%s] Read-me and verify channel permissions are correct", guild.name)
+        await ensure_panels(guild)
 
 
 if __name__ == "__main__":
