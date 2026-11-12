@@ -404,16 +404,20 @@ class GateView(discord.ui.View):
                 "Setup isn't finished yet. An admin needs to run **/setup**.", ephemeral=True
             )
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        # Make sure Verifying really hides this channel and opens verify before
+        # handing it out (repairs the channels if their permissions are wrong).
+        for problem in await ensure_channel_perms(guild):
+            log.warning("Channel setup problem: %s", problem)
         try:
-            # Verifying hides this read-me channel and opens the verify channel.
             await member.add_roles(verifying, reason="Read the rules")
         except discord.Forbidden:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "I couldn't give you access. An admin needs to move my role above `Verifying`.",
                 ephemeral=True,
             )
             return
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"\N{WHITE HEAVY CHECK MARK} Head to <#{VERIFY_CHANNEL_ID}> to finish verifying.", ephemeral=True
         )
 
@@ -582,6 +586,60 @@ class CaptchaModal(discord.ui.Modal, title="Captcha verification"):
 # --------------------------------------------------------------------------
 # Admin commands
 # --------------------------------------------------------------------------
+async def ensure_channel_perms(guild: discord.Guild) -> list[str]:
+    """Make sure read-me and verify have the right hide/show rules, fixing any
+    that are wrong. Only writes when something is off, so it's cheap to call.
+    Returns a list of problems it couldn't fix (empty = all good)."""
+    verifying = get_verifying_role(guild)
+    verified = get_verified_role(guild)
+    gate = guild.get_channel(GATE_CHANNEL_ID)
+    verify = guild.get_channel(VERIFY_CHANNEL_ID)
+    missing = [n for n, x in (("Verifying role", verifying), ("Verified role", verified),
+                              ("read-me channel", gate), ("verify channel", verify)) if x is None]
+    if missing:
+        return [f"Couldn't find: {', '.join(missing)}. Check the IDs in Railway's variables."]
+
+    everyone = guild.default_role
+    read_only = dict(read_message_history=True, send_messages=False)
+    wanted = [
+        # Read-me: new members only. Closes when they tick (Verifying) and stays closed (Verified).
+        (gate, everyone, dict(view_channel=True, **read_only)),
+        (gate, verifying, dict(view_channel=False)),
+        (gate, verified, dict(view_channel=False)),
+        # Verify: only while Verifying. Closes once Verified.
+        (verify, everyone, dict(view_channel=False)),
+        (verify, verifying, dict(view_channel=True, **read_only)),
+        (verify, verified, dict(view_channel=False)),
+    ]
+    problems = []
+    for channel, target, perms in wanted:
+        overwrite = channel.overwrites_for(target)
+        if all(getattr(overwrite, k) == v for k, v in perms.items()):
+            continue
+        for k, v in perms.items():
+            setattr(overwrite, k, v)
+        try:
+            await channel.set_permissions(target, overwrite=overwrite, reason="verification bot: fix channel access")
+            log.info("Fixed %s permissions for %s", channel.name, target.name)
+        except discord.Forbidden:
+            problems.append(
+                f"I'm not allowed to edit #{channel.name}. Give me Manage Channels and move my role higher."
+            )
+            break
+
+    # A role "allowed" on a channel beats Verifying's "denied", which would keep
+    # read-me open (or verify open after verifying) for anyone holding it.
+    for channel, keep in ((gate, {everyone}), (verify, {verifying})):
+        for target, overwrite in channel.overwrites.items():
+            if (isinstance(target, discord.Role) and target not in keep and overwrite.view_channel is True
+                    and not target.managed and not target.permissions.administrator):
+                problems.append(
+                    f"The `{target.name}` role is set to *allow* viewing #{channel.name}, which keeps it open "
+                    f"for anyone with that role. Remove that override in the channel's permissions."
+                )
+    return problems
+
+
 async def _purge_bot_messages(channel: discord.abc.Messageable):
     """Best-effort cleanup of the bot's own old panel messages so re-running a
     command doesn't stack duplicates. Silently ignores missing permissions."""
@@ -622,23 +680,7 @@ async def setup_cmd(interaction: discord.Interaction):
         )
         return
 
-    everyone = guild.default_role
-    try:
-        # Read-me: new members see it (read only); it closes once they tap ✅
-        # (Verifying) and stays closed once Verified.
-        await gate.set_permissions(everyone, view_channel=True, read_message_history=True, send_messages=False)
-        await gate.set_permissions(verifying, view_channel=False)
-        await gate.set_permissions(verified, view_channel=False)
-        # Verify: only Verifying sees it (read only); closes once Verified.
-        await verify.set_permissions(everyone, view_channel=False)
-        await verify.set_permissions(verifying, view_channel=True, read_message_history=True, send_messages=False)
-        await verify.set_permissions(verified, view_channel=False)
-    except discord.Forbidden:
-        await interaction.followup.send(
-            "I need **Manage Channels** permission (and my role above the channel) to configure it.",
-            ephemeral=True,
-        )
-        return
+    perm_problems = await ensure_channel_perms(guild)
 
     gate_embed = discord.Embed(
         title="\N{WHITE HEAVY CHECK MARK} Confirm you've read the rules",
@@ -666,7 +708,9 @@ async def setup_cmd(interaction: discord.Interaction):
     )
     await interaction.followup.send(
         "**Setup complete.**\n"
-        f"- Read-me panel posted in <#{GATE_CHANNEL_ID}>\n"
+        + ("".join(f"- \N{WARNING SIGN}\N{VARIATION SELECTOR-16} {p}\n" for p in perm_problems)
+           or "- Read-me and verify channel permissions are correct\n")
+        + f"- Read-me panel posted in <#{GATE_CHANNEL_ID}>\n"
         f"- Verify panel posted in <#{VERIFY_CHANNEL_ID}>\n"
         f"- {roles_line}\n\n"
         f"Make sure my role sits **above** `{VERIFYING_ROLE_NAME}`, `{VERIFIED_ROLE_NAME}` "
@@ -809,6 +853,18 @@ async def setup_hook():
 @bot.event
 async def on_ready():
     log.info("Logged in as %s (id=%s)", bot.user, bot.user.id)
+    # Repair read-me / verify permissions on every start, so it never depends
+    # on someone remembering to re-run /setup.
+    for guild in bot.guilds:
+        try:
+            problems = await ensure_channel_perms(guild)
+        except Exception:
+            log.exception("Couldn't check channel permissions in %s", guild.name)
+            continue
+        for problem in problems:
+            log.warning("[%s] %s", guild.name, problem)
+        if not problems:
+            log.info("[%s] Read-me and verify channel permissions are correct", guild.name)
 
 
 if __name__ == "__main__":
